@@ -1,9 +1,6 @@
 package com.akdeniz.googleplaycrawler.cli;
 
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -70,7 +67,7 @@ public class googleplay {
     private Namespace namespace;
 
     public static enum COMMAND {
-	LIST, DOWNLOAD, CHECKIN, CATEGORIES, SEARCH, PERMISSIONS, REVIEWS, REGISTER, USEGCM, RECOMMENDATIONS
+	LIST, DOWNLOAD, DETAILS, CHECKIN, CATEGORIES, SEARCH, PERMISSIONS, REVIEWS, REGISTER, USEGCM, RECOMMENDATIONS
     }
 
     private static final String LIST_HEADER = new StringJoiner(DELIMETER).add("Title").add("Package").add("Creator")
@@ -122,6 +119,14 @@ public class googleplay {
 		.help("offset to define where list begins");
 	listParser.addArgument("-n", "--number").type(Integer.class).required(false)
 		.help("how many app will be listed");
+
+    /* =================Details Arguments============== */
+    Subparser detailsParser = subparsers.addParser("details", true).description("get details!")
+        .setDefault("command", COMMAND.DETAILS);
+    detailsParser.addArgument("-i", "--input").required(false).help("input file containing package names");
+    detailsParser.addArgument("-p", "--packagenames").required(false).nargs("+").help("applications to get details");
+    detailsParser.addArgument("-o", "--output").required(false).help("output file to store the package details");
+
 
 	/* =================Categories Arguments============== */
 	Subparser categoriesParser = subparsers.addParser("categories", true)
@@ -195,6 +200,8 @@ public class googleplay {
 		break;
 	    case DOWNLOAD:
 		downloadCommand();
+        case DETAILS:
+        detailsCommand();
 		break;
 	    case LIST:
 		listCommand();
@@ -508,6 +515,64 @@ public class googleplay {
 	for (String packageName : packageNames) {
 	    download(packageName);
 	}
+    }
+
+    public static List<String> readPackages(String packageFile)
+    {
+        List<String> packages = new ArrayList<String>();
+        try {
+            BufferedReader reader = new BufferedReader(new FileReader(packageFile));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (!line.isEmpty())
+                    packages.add(line);
+            }
+            reader.close();
+        } catch (FileNotFoundException e) {
+            e.printStackTrace();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return packages;
+    }
+
+    private void detailsCommand() throws Exception {
+
+    List<String> packageNames = namespace.getList("packagename");
+    String packageFile = namespace.getString("input");
+    if (packageFile != null) {
+        List<String> packages = readPackages(packageFile);
+        if (packageNames == null)
+            packageNames = packages;
+        else
+            packageNames.addAll(packages);
+    }
+    if (packageNames == null) {
+        System.err.println("No package names specified!");
+        return;
+    }
+    System.out.println("Getting details for " + packageNames.size() + " packages");
+
+    login();
+
+    BulkDetailsResponse bulkDetails = service.bulkDetails(packageNames);
+
+    for (BulkDetailsEntry bulkDetailsEntry : bulkDetails.getEntryList()) {
+        DocV2 doc = bulkDetailsEntry.getDoc();
+        AppDetails appDetails = doc.getDetails().getAppDetails();
+        System.out.println("Details for package " + appDetails.getPackageName() + ":");
+        System.out.println(appDetails);
+    }
+
+    /* Query one by one
+    for (String packageName : packageNames) {
+        DetailsResponse details = service.details(packageName);
+        AppDetails appDetails = details.getDocV2().getDetails().getAppDetails();
+        System.out.println("Details for package " + packageName + ":");
+        System.out.println(appDetails);
+    }
+    */
     }
 
     private void checkin() throws Exception {
