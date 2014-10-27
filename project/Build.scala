@@ -45,6 +45,8 @@ object Build extends Build {
     version in PB.protobufConfig := "2.5.0",
     libraryDependencies ++= Seq(
       "org.apache.httpcomponents" % "httpclient" % "4.2.2",
+      "org.xerial" % "sqlite-jdbc" % "3.7.2",
+      "com.google.code.gson" % "gson" % "2.3",
       "commons-logging" % "commons-logging" % "1.1.1",
       "net.sourceforge.argparse4j" % "argparse4j" % "0.2.2",
       "org.apache.httpcomponents" % "httpcore" % "4.2.2",

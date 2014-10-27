@@ -2,11 +2,14 @@ package com.akdeniz.googleplaycrawler.cli;
 
 import java.io.*;
 import java.math.BigInteger;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Properties;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.*;
 
+import com.akdeniz.googleplaycrawler.output.AppDetailsContainer;
+import com.akdeniz.googleplaycrawler.output.DBExecutor;
+import com.akdeniz.googleplaycrawler.output.JsonConverter;
 import org.apache.http.HttpHost;
 import org.apache.http.client.HttpClient;
 import org.apache.http.conn.params.ConnRoutePNames;
@@ -52,6 +55,8 @@ import net.sourceforge.argparse4j.inf.FeatureControl;
 import net.sourceforge.argparse4j.inf.Namespace;
 import net.sourceforge.argparse4j.inf.Subparser;
 import net.sourceforge.argparse4j.inf.Subparsers;
+
+import static java.lang.Thread.sleep;
 
 /**
  * 
@@ -176,6 +181,8 @@ public class googleplay {
 	subparsers.addParser("usegcm", true).description("listens GCM(GoogleCloudMessaging) for download notification and downloads them!")
 		.setDefault("command", COMMAND.USEGCM);
     }
+
+
 
     public static void main(String[] args) throws Exception {
 
@@ -537,6 +544,28 @@ public class googleplay {
         return packages;
     }
 
+    public void storeAppDetails(DBExecutor dbExecutor, PreparedStatement preparedStatement,
+                                String packageName, AppDetailsContainer container)
+    {
+        String json = JsonConverter.toJson(container);
+        ResultSet rs = dbExecutor.Query("SELECT IFNULL(max(counter), 0) " +
+                "+ 1 as nextCounter from app_metadata;");
+        try {
+            if (rs.next()) {
+                int counter = rs.getInt("nextCounter");
+                preparedStatement.setString(1, packageName);
+                preparedStatement.setInt(2, counter);
+                Date today = new Date();
+                preparedStatement.setDate(3, new java.sql.Date(today.getTime()));
+                preparedStatement.setString(4, json);
+                preparedStatement.executeUpdate();
+
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
     private void detailsCommand() throws Exception {
 
     List<String> packageNames = namespace.getList("packagename");
@@ -554,25 +583,89 @@ public class googleplay {
     }
     System.out.println("Getting details for " + packageNames.size() + " packages");
 
+    String outputFile = namespace.getString("output");
+    DBExecutor dbExecutor = null;
+    PreparedStatement preparedStatement = null;
+    if (outputFile != null) {
+        dbExecutor = new DBExecutor(outputFile);
+        dbExecutor.CreateTable("app_metadata", "packageName text, " +
+                "counter integer, ctime date, metadata text", true);
+        preparedStatement = dbExecutor.PrepareInsert(
+                "INSERT INTO app_metadata(packageName, counter, " +
+                        "ctime, metadata) VALUES(?,?,?,?)"
+        );
+    }
+
+    boolean outputToDB = (dbExecutor != null && preparedStatement != null);
+
     login();
+    System.out.println("Done login.");
 
-    BulkDetailsResponse bulkDetails = service.bulkDetails(packageNames);
-
-    for (BulkDetailsEntry bulkDetailsEntry : bulkDetails.getEntryList()) {
-        DocV2 doc = bulkDetailsEntry.getDoc();
-        AppDetails appDetails = doc.getDetails().getAppDetails();
-        System.out.println("Details for package " + appDetails.getPackageName() + ":");
-        System.out.println(appDetails);
+    final int MAX_PACKAGES = 10;
+    List<List<String>> tasks = new ArrayList<List<String>>();
+    Iterator<String> iterator = packageNames.iterator();
+    while (iterator.hasNext()) {
+        List<String> task = new ArrayList<String>();
+        int i = 0;
+        while (iterator.hasNext() && i < MAX_PACKAGES) {
+            String pkg = iterator.next();
+            task.add(pkg);
+            i++;
+        }
+        tasks.add(task);
     }
 
-    /* Query one by one
-    for (String packageName : packageNames) {
-        DetailsResponse details = service.details(packageName);
-        AppDetails appDetails = details.getDocV2().getDetails().getAppDetails();
-        System.out.println("Details for package " + packageName + ":");
-        System.out.println(appDetails);
+    System.out.println("Getting details for " + packageNames.size() + " packages, " +
+            "split into " + tasks.size() + " tasks");
+
+    Iterator<List<String>> listIterator = tasks.iterator();
+    while (listIterator.hasNext()) {
+        List<String> task = listIterator.next();
+        BulkDetailsResponse bulkDetails = service.bulkDetails(task);
+
+        for (BulkDetailsEntry bulkDetailsEntry : bulkDetails.getEntryList()) {
+            DocV2 doc = bulkDetailsEntry.getDoc();
+            AppDetails appDetails = doc.getDetails().getAppDetails();
+            AppDetailsContainer container = new AppDetailsContainer(appDetails);
+            // fix some details
+            if (!appDetails.hasTitle()) {
+                container.title = doc.getTitle();
+            }
+            if (!appDetails.hasDeveloperName()) {
+                container.developerName = doc.getCreator();
+            }
+            System.out.println("Got details for package " + appDetails.getPackageName() + ".");
+            if (outputToDB) {
+                storeAppDetails(dbExecutor, preparedStatement, appDetails.getPackageName(),
+                        container);
+            } else { // no output specified, print
+                System.out.println(container);
+            }
+        }
+
+        /* Query one by one
+        for (String packageName : task) {
+            DetailsResponse details = service.details(packageName);
+            AppDetails appDetails = details.getDocV2().getDetails().getAppDetails();
+            System.out.println("Details for package " + packageName + ":");
+            System.out.println(appDetails);
+        }
+        */
+
+        if (outputToDB) {
+            System.out.println("Committing changes to database");
+            dbExecutor.Commit();
+        }
+
+        long sleepTime = 35000 + new Random().nextInt(5000);
+        System.out.println("sleeping for " + (sleepTime / 1000) + " seconds...");
+        sleep(sleepTime);
     }
-    */
+
+    if (outputToDB) {
+        dbExecutor.CleanUp();
+        preparedStatement.close();
+    }
     }
 
     private void checkin() throws Exception {
